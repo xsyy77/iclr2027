@@ -1,11 +1,11 @@
 # Anonymous review artifacts
 
-Code, saved data, and reproducibility checks for the accompanying ICLR submission. Download [the full review package](iclr2027_review_package.zip) and read [the reproducibility status](REPRODUCIBILITY_STATUS.md) before interpreting results. The ZIP contains source files in browsable directories after extraction; it is approximately 9.4 MB.
+Code, saved data, and reproducibility checks for the accompanying ICLR submission. Download [the full review package](iclr2027_review_package_v2.zip) and read [the reproducibility status](REPRODUCIBILITY_STATUS.md) before interpreting results. The ZIP contains source files in browsable directories after extraction; it is approximately 9.4 MB.
 
 ## Quick verification
 
 ```bash
-unzip iclr2027_review_package.zip
+unzip iclr2027_review_package_v2.zip
 cd iclr2027_review_package
 python -m venv .venv
 . .venv/bin/activate
@@ -13,9 +13,10 @@ pip install -r requirements.txt
 python scripts/check_project.py
 python paper_checks/verify_bundle.py
 python evaluation/evaluate_saved_results.py
+python portable/reproduce_dmdb.py
 ```
 
-The bundled numerical check passes 34/34 tests for current DrugMechDB clean-condition results, Bridge-reliability discrimination, utility-weight sensitivity, and Stage-III controls. It verifies saved outputs; it is not a fresh training run.
+The bundled numerical check passes 34/34 tests for current DrugMechDB clean-condition results, Bridge-reliability discrimination, utility-weight sensitivity, and Stage-III controls. It verifies saved outputs; it is not a fresh training run. The portable script independently reruns final DrugMechDB mixed-condition retrieval and matches three archived CSVs byte-for-byte.
 
 ## Package contents
 
