@@ -1,6 +1,6 @@
 # Anonymous review artifacts
 
-Code, saved inputs and outputs, and reproducibility checks for the accompanying ICLR submission. Download the [current v3 review package](iclr2027_review_package_v3.zip) and read [REPRODUCIBILITY_STATUS.md](REPRODUCIBILITY_STATUS.md) before interpreting results. The previous [v2 snapshot](iclr2027_review_package_v2.zip) remains available for comparison. The extracted v3 directory is named `iclr2027_review_package`.
+Code, saved inputs and outputs, and reproducibility checks for the accompanying ICLR submission. Download the [current v3 review package](iclr2027_review_package_v3.zip) and read [REPRODUCIBILITY_STATUS.md](REPRODUCIBILITY_STATUS.md) before interpreting results. The extracted v3 directory is named `iclr2027_review_package`.
 
 ## Quick verification
 
