@@ -1,0 +1,56 @@
+name: experiment-runner
+on:
+  push:
+    branches: [experiment-runner-20261022]
+jobs:
+  inspect-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack review package
+        run: |
+          unzip -q iclr2027_review_package_v3.zip -d unpacked
+          cd unpacked/iclr2027_review_package
+          echo "=== ROOT ==="
+          find . -maxdepth 2 -type f | sort | sed -n '1,260p'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install requirements
+        run: |
+          cd unpacked/iclr2027_review_package
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run packaged verification
+        run: |
+          cd unpacked/iclr2027_review_package
+          python scripts/check_project.py
+          python paper_checks/verify_bundle.py
+          python evaluation/evaluate_saved_results.py
+          python portable/check_archived_bridge_selection.py
+          python portable/reproduce_dmdb.py
+      - name: Inspect experiment-relevant files
+        if: always()
+        run: |
+          cd unpacked/iclr2027_review_package
+          echo "=== STAGE2/STAGE3/SAFETY/GATE/CONDITIONAL FILES ==="
+          find . -type f | grep -Ei 'stage2|stage3|safe|gate|conditional|utility|bootstrap|corrupt|epikg|openbiolink|cwq' | sort | sed -n '1,500p'
+          echo "=== CSV HEADERS ==="
+          python - <<'PY'
+          from pathlib import Path
+          import csv
+          keys=('stage2','stage3','safe','gate','conditional','utility','bootstrap','corrupt')
+          for p in sorted(Path('.').rglob('*.csv')):
+              s=str(p).lower()
+              if any(k in s for k in keys):
+                  print('\n###',p)
+                  try:
+                      with p.open(newline='', encoding='utf-8') as f:
+                          r=csv.reader(f)
+                          for i,row in zip(range(4),r):
+                              print(row)
+                  except Exception as e:
+                      print('ERR',e)
+          PY
