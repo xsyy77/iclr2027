@@ -1,4 +1,4 @@
-name: temporary-stage2-complete
+name: temporary-stage2-complete-v2
 on:
   push:
     branches: [main]
