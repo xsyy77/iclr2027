@@ -1,0 +1,17 @@
+name: temporary-stage2-complete
+on:
+  push:
+    branches: [main]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Stage II assets
+        run: |
+          unzip -q iclr2027_review_package_v3.zip -d /tmp/pkg
+          cd /tmp/pkg/iclr2027_review_package
+          echo "=== STAGE2 FILES ==="
+          find . -type f | grep -Ei 'stage2|bridge.*marginal|conditional|selection|ranking|semantic_bridge' | sort | head -1000
+          echo "=== POSSIBLE SCRIPTS ==="
+          grep -RIlE 'roc_auc_score|average_precision_score|spearman|marginal_delta|conditional' code methods portable paper_checks supplementary_code 2>/dev/null | sort | head -500
