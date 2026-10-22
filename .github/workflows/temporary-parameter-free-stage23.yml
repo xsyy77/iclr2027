@@ -1,0 +1,349 @@
+name: temporary-parameter-free-stage23
+on:
+  push:
+    branches: [main]
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run parameter-free Stage II and Stage III
+        run: |
+          unzip -q iclr2027_review_package_v3.zip -d /tmp/pkg
+          cd /tmp/pkg/iclr2027_review_package
+          pip -q install pandas numpy networkx scikit-learn scipy
+          cat > /tmp/parameter_free_stage23.py <<'PY'
+          import json, math, itertools
+          from collections import defaultdict
+          from pathlib import Path
+          import numpy as np, pandas as pd, networkx as nx
+          from sklearn.ensemble import HistGradientBoostingRegressor
+          from scipy.stats import spearmanr
+
+          BASE=Path('/tmp/pkg/iclr2027_review_package')
+          D=BASE/'data/processed/drugmechdb'
+          paths=json.load(open(BASE/'data/raw/drugmechdb/indication_paths.json'))
+          man=pd.read_csv(D/'benchmark_manifest.csv')
+          cand=pd.read_csv(D/'semantic_bridge_predictions.csv')
+
+          # ---------- graph / retrieval ----------
+          G=nx.MultiDiGraph(); gold={}
+          for rec in paths:
+              rid=str(rec.get('graph',{}).get('_id','')); links=[]
+              for n in rec.get('nodes',[]):
+                  nid=str(n['id'])
+                  if nid not in G: G.add_node(nid)
+              for e in rec.get('links',[]):
+                  u,v,r=str(e['source']),str(e['target']),str(e.get('key','unknown'))
+                  G.add_edge(u,v,relation=r); links.append((u,v,r))
+              if rid: gold[rid]=links
+          OUT=defaultdict(list)
+          for u,v,d in G.edges(data=True):
+              t=(v,str(d.get('relation','unknown')))
+              if t not in OUT[u]: OUT[u].append(t)
+          MAXLOG=max(math.log1p(G.in_degree(n)+G.out_degree(n)) for n in G.nodes) or 1.0
+
+          def rq(r):
+              s=r.lower().replace('_',' ')
+              if any(k in s for k in ['causes','prevents','treats','therapeutic']): return 1.
+              if any(k in s for k in ['regulates','activity','abundance','inhibits','stimulates','affects']): return .88
+              if any(k in s for k in ['participates','produces','has output','capable of','precedes']): return .72
+              if any(k in s for k in ['occurs in','located in','location of','correlated','associated']): return .52
+              return .62
+          def lgs(v,r):
+              deg=math.log1p(G.in_degree(v)+G.out_degree(v))/MAXLOG
+              return .82*rq(r)+.18*(1-deg)
+          def bss(nodes,conf):
+              if not conf:return 0.
+              rr=[n for n in nodes if n in conf]
+              if not rr:return 0.
+              u=list(dict.fromkeys(rr)); cov=len(u)/max(1,len(conf))
+              mc=float(np.mean([conf[n] for n in u])); cur=conf.get(nodes[-1],0.)
+              recent=sum(1 for n in nodes[-2:] if n in conf)/2.0
+              sat=.65 if len(u)<=1 else (.85 if len(u)==2 else 1.)
+              return min(1.,max(0.,(.45*cov+.25*mc+.15*cur+.15*recent)*sat))
+          def search(src,tgt,conf,g=.30):
+              beam=[(0.,(src,),(),())]; gen={src}; ex=0; best=None
+              for _ in range(8):
+                  nxt=[]
+                  for _,pn,pr,pg in beam:
+                      for v,r in OUT.get(pn[-1],[]):
+                          if ex>=20: break
+                          ex+=1
+                          if v in pn: continue
+                          if v not in gen and len(gen)>=14: continue
+                          gen.add(v)
+                          nn=pn+(v,); rr=pr+(r,); gg=pg+(lgs(v,r),)
+                          sc=(1-g)*float(np.mean(gg))+g*bss(nn,conf)-.012*len(rr)
+                          st=(sc,nn,rr,gg); nxt.append(st)
+                          if v==tgt and (best is None or sc>best[0]): best=st
+                      if ex>=20: break
+                  if best is not None: break
+                  if not nxt: break
+                  nxt.sort(key=lambda x:(x[0],-len(x[1])),reverse=True)
+                  beam=nxt[:2]
+              z=best if best is not None else (max(beam,key=lambda x:x[0]) if beam else (0.,(src,),(),()))
+              _,pn,rr,_=z
+              edges=[(pn[i],pn[i+1],rr[i]) for i in range(len(rr))]
+              return float(pn[-1]==tgt),edges,pn
+
+          MAN={(r.task,r.rid):r for r in man.itertuples(index=False)}
+          CANDS={(k[0],k[1],k[2],k[3]):d.drop_duplicates('node').copy()
+                 for k,d in cand.groupby(['task','rid','split','condition'])}
+
+          def eval_set(row,nodes,g=.30,confvals=None):
+              if confvals is None:
+                  conf={str(n):1.0 for n in nodes}
+              else:
+                  conf={str(n):float(confvals[str(n)]) for n in nodes}
+              ps,e,pn=search(str(row.source),str(row.target),conf,g)
+              ge=set(gold[str(row.rid)])
+              er=len(ge & set(e))/max(1,len(ge))
+              ah=float(str(row.answer) in set(pn))
+              return ps,er,ah
+          def node_deg(n):
+              n=str(n)
+              return math.log1p(G.in_degree(n)+G.out_degree(n))/MAXLOG if n in G else 0.
+          def adj(a,b):
+              return float(G.has_edge(str(a),str(b)) or G.has_edge(str(b),str(a)))
+
+          # =========================================================
+          # STAGE II: no scalar utility, no lambda, no weighted target
+          # Targets are separate downstream deltas: DeltaPS and DeltaER.
+          # =========================================================
+          samples=[]
+          cache={}
+          for key,d in CANDS.items():
+              task,rid,split,cond=key; row=MAN[(task,rid)]
+              pool=d.node.astype(str).tolist()
+              confs=dict(zip(d.node.astype(str),d.pred_semantic_conf.astype(float)))
+              for r in range(min(3,len(pool))+1):
+                  for H in itertools.combinations(pool,r):
+                      hs=tuple(sorted(H))
+                      cache[(key,hs)]=eval_set(row,hs,.30,confs)
+              for r in range(min(3,len(pool))):
+                  for H in itertools.combinations(pool,r):
+                      H=tuple(sorted(H)); base=cache[(key,H)]
+                      for h in pool:
+                          if h in H: continue
+                          Hp=tuple(sorted(H+(h,))); plus=cache[(key,Hp)]
+                          sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
+                          samples.append({
+                              'task':task,'rid':rid,'split':split,'condition':cond,
+                              'candidate':h,'selected_size':len(H),'pool_size':len(pool),
+                              'cand_conf':confs[h],'cand_deg':node_deg(h),
+                              'sel_conf_mean':float(np.mean(sd)) if sd else 0.,
+                              'sel_conf_max':max(sd) if sd else 0.,
+                              'sel_conf_min':min(sd) if sd else 0.,
+                              'sel_conf_std':float(np.std(sd)) if sd else 0.,
+                              'sel_deg_mean':float(np.mean(dd)) if dd else 0.,
+                              'adj_count':sum(adj(h,x) for x in H),
+                              'conf_gap':confs[h]-(float(np.mean(sd)) if sd else 0.),
+                              'dPS':plus[0]-base[0],
+                              'dER':plus[1]-base[1]
+                          })
+          S=pd.DataFrame(samples)
+          task_d=pd.get_dummies(S.task,prefix='task',dtype=float)
+          X_ind=pd.concat([
+              S[['cand_conf','cand_deg','pool_size']].reset_index(drop=True),
+              task_d.reset_index(drop=True)],axis=1)
+          X_cond=pd.concat([
+              X_ind,
+              S[['selected_size','sel_conf_mean','sel_conf_max','sel_conf_min','sel_conf_std',
+                 'sel_deg_mean','adj_count','conf_gap']].reset_index(drop=True)],axis=1)
+          tr=S.split.eq('train').to_numpy(); te=S.split.eq('test').to_numpy()
+
+          # Fixed model class/settings for both variants; no validation tuning.
+          def fit_pair(X):
+              mps=HistGradientBoostingRegressor(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                                max_iter=250,random_state=20261022).fit(X[tr],S.dPS.to_numpy()[tr])
+              mer=HistGradientBoostingRegressor(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                                max_iter=250,random_state=20261022).fit(X[tr],S.dER.to_numpy()[tr])
+              return mps,mer
+          ind_ps,ind_er=fit_pair(X_ind)
+          con_ps,con_er=fit_pair(X_cond)
+
+          def report_pred(name,X,mps,mer):
+              yps=S.dPS.to_numpy()[te]; yer=S.dER.to_numpy()[te]
+              pps=mps.predict(X[te]); per=mer.predict(X[te])
+              rps=spearmanr(yps,pps).statistic
+              rer=spearmanr(yer,per).statistic
+              active=np.abs(yer)>1e-12
+              ar=spearmanr(yer[active],per[active]).statistic if active.sum()>2 else np.nan
+              # safety sign accuracy is exact zero-threshold, not tuned.
+              sacc=np.mean((pps>=0)==(yps>=0))
+              print('PRED',name,'N',te.sum(),'PS_SPEARMAN',rps,'ER_SPEARMAN',rer,
+                    'ER_ACTIVE_SPEARMAN',ar,'PS_NONHARM_SIGN_ACC',sacc)
+          report_pred('Independent',X_ind,ind_ps,ind_er)
+          report_pred('Conditional',X_cond,con_ps,con_er)
+
+          ind_cols=X_ind.columns.tolist(); con_cols=X_cond.columns.tolist()
+          def feat(task,pool,confs,h,H,cols):
+              sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
+              d={'cand_conf':confs[h],'cand_deg':node_deg(h),'pool_size':len(pool),
+                 'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),
+                 'task_Process':float(task=='Process'),'selected_size':len(H),
+                 'sel_conf_mean':float(np.mean(sd)) if sd else 0.,
+                 'sel_conf_max':max(sd) if sd else 0.,
+                 'sel_conf_min':min(sd) if sd else 0.,
+                 'sel_conf_std':float(np.std(sd)) if sd else 0.,
+                 'sel_deg_mean':float(np.mean(dd)) if dd else 0.,
+                 'adj_count':sum(adj(h,x) for x in H),
+                 'conf_gap':confs[h]-(float(np.mean(sd)) if sd else 0.)}
+              return pd.DataFrame([[d.get(c,0.) for c in cols]],columns=cols)
+          def select_model(task,pool,confs,K,conditional):
+              H=[]
+              mps,mer,cols=(con_ps,con_er,con_cols) if conditional else (ind_ps,ind_er,ind_cols)
+              static={}
+              if not conditional:
+                  for h in pool:
+                      xx=feat(task,pool,confs,h,[],cols)
+                      static[h]=(float(mps.predict(xx)[0]),float(mer.predict(xx)[0]))
+              for _ in range(K):
+                  rem=[h for h in pool if h not in H]
+                  scored=[]
+                  for h in rem:
+                      if conditional:
+                          xx=feat(task,pool,confs,h,H,cols)
+                          dps=float(mps.predict(xx)[0]); der=float(mer.predict(xx)[0])
+                      else:
+                          dps,der=static[h]
+                      # Parameter-free decision: only predicted non-harm and positive evidence gain.
+                      if dps>=0 and der>0:
+                          scored.append((der,h))
+                  if not scored: break
+                  H.append(max(scored,key=lambda z:z[0])[1])
+              return H
+          def select_oracle(row,pool,confs,K):
+              H=[]
+              for _ in range(K):
+                  base=eval_set(row,H,.30,confs)
+                  scored=[]
+                  for h in pool:
+                      if h in H: continue
+                      plus=eval_set(row,H+[h],.30,confs)
+                      dps=plus[0]-base[0]; der=plus[1]-base[1]
+                      if dps>=0 and der>0: scored.append((der,h))
+                  if not scored: break
+                  H.append(max(scored,key=lambda z:z[0])[1])
+              return H
+
+          res=[]
+          for key,d in CANDS.items():
+              task,rid,split,cond=key
+              if split!='test': continue
+              row=MAN[(task,rid)]
+              pool=d.node.astype(str).tolist()
+              confs=dict(zip(pool,d.pred_semantic_conf.astype(float)))
+              for K in [1,2]:
+                  if not pool: continue
+                  I=select_model(task,pool,confs,K,False)
+                  C=select_model(task,pool,confs,K,True)
+                  O=select_oracle(row,pool,confs,K)
+                  for name,sel in [('Independent',I),('Conditional',C),('Oracle',O)]:
+                      ps,er,ah=eval_set(row,sel,.30,confs)
+                      res.append({'task':task,'rid':rid,'condition':cond,'K':K,'method':name,
+                                  'selected_n':len(sel),'PS':ps,'ER':er,'AH':ah})
+          R=pd.DataFrame(res)
+          print('STAGE2_SELECTION')
+          print(R.groupby(['K','method']).agg(n=('rid','size'),selected=('selected_n','mean'),
+                PS=('PS','mean'),ER=('ER','mean'),AH=('AH','mean')).to_string())
+          rng=np.random.default_rng(20261022)
+          for K in [1,2]:
+              a=R[(R.K==K)&(R.method=='Conditional')]
+              b=R[(R.K==K)&(R.method=='Independent')]
+              m=a.merge(b,on=['task','rid','condition','K'],suffixes=('_c','_i'))
+              for met in ['PS','ER','AH']:
+                  d=(m[f'{met}_c']-m[f'{met}_i']).to_numpy(float)
+                  ix=rng.integers(0,len(d),(10000,len(d))); z=d[ix].mean(1)
+                  lo,hi=np.quantile(z,[.025,.975])
+                  print('STAGE2_BOOT','K',K,met,'DIFF',d.mean(),'CI',lo,hi,'N',len(d))
+
+          # =========================================================
+          # STAGE III: no scalar objective, no threshold tuning.
+          # Learn DeltaPS and DeltaER for each available action from train interventions.
+          # Decision: maximize predicted DeltaER subject to predicted DeltaPS>=0.
+          # =========================================================
+          actions=np.round(np.arange(0.0,0.501,0.05),2)
+          stage3=[]
+          for key,d in CANDS.items():
+              task,rid,split,cond=key; row=MAN[(task,rid)]
+              pool=d.node.astype(str).tolist()
+              confs=dict(zip(pool,d.pred_semantic_conf.astype(float)))
+              base=eval_set(row,pool,.30,confs)
+              for a in actions:
+                  out=eval_set(row,pool,float(a),confs)
+                  stage3.append({'task':task,'rid':rid,'split':split,'condition':cond,'action':float(a),
+                                 'pool_size':len(pool),'conf_mean':float(np.mean(list(confs.values()))) if confs else 0.,
+                                 'conf_max':max(confs.values()) if confs else 0.,
+                                 'conf_min':min(confs.values()) if confs else 0.,
+                                 'conf_std':float(np.std(list(confs.values()))) if confs else 0.,
+                                 'dPS':out[0]-base[0],'dER':out[1]-base[1],
+                                 'PS':out[0],'ER':out[1],'AH':out[2],
+                                 'basePS':base[0],'baseER':base[1],'baseAH':base[2]})
+          T=pd.DataFrame(stage3)
+          td=pd.get_dummies(T.task,prefix='task',dtype=float)
+          cd=pd.get_dummies(T.condition,prefix='cond',dtype=float)
+          X3=pd.concat([T[['action','pool_size','conf_mean','conf_max','conf_min','conf_std']].reset_index(drop=True),
+                        td.reset_index(drop=True),cd.reset_index(drop=True)],axis=1)
+          tr3=T.split.eq('train').to_numpy()
+          m3ps=HistGradientBoostingRegressor(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                             max_iter=250,random_state=20261022).fit(X3[tr3],T.dPS.to_numpy()[tr3])
+          m3er=HistGradientBoostingRegressor(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                             max_iter=250,random_state=20261022).fit(X3[tr3],T.dER.to_numpy()[tr3])
+          cols3=X3.columns.tolist()
+          def x3(task,cond,pool,confs,a):
+              d={'action':a,'pool_size':len(pool),
+                 'conf_mean':float(np.mean(list(confs.values()))) if confs else 0.,
+                 'conf_max':max(confs.values()) if confs else 0.,
+                 'conf_min':min(confs.values()) if confs else 0.,
+                 'conf_std':float(np.std(list(confs.values()))) if confs else 0.,
+                 'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),
+                 'task_Process':float(task=='Process')}
+              for cc in ['Clean','25%','50%','75%','Random']:
+                  d['cond_'+cc]=float(cond==cc)
+              return pd.DataFrame([[d.get(c,0.) for c in cols3]],columns=cols3)
+
+          out3=[]
+          for key,d in CANDS.items():
+              task,rid,split,cond=key
+              if split!='test': continue
+              row=MAN[(task,rid)]
+              pool=d.node.astype(str).tolist()
+              confs=dict(zip(pool,d.pred_semantic_conf.astype(float)))
+              base=eval_set(row,pool,.30,confs)
+              candidates=[]
+              for a in actions:
+                  xx=x3(task,cond,pool,confs,float(a))
+                  dps=float(m3ps.predict(xx)[0]); der=float(m3er.predict(xx)[0])
+                  if dps>=0:
+                      candidates.append((der,float(a)))
+              # No positive predicted ER gain -> keep baseline action.
+              if not candidates or max(candidates,key=lambda z:z[0])[0] <= 0:
+                  chosen=.30
+              else:
+                  chosen=max(candidates,key=lambda z:z[0])[1]
+              actual=eval_set(row,pool,chosen,confs)
+              out3.append({'task':task,'rid':rid,'condition':cond,'action':chosen,
+                           'PS':actual[0],'ER':actual[1],'AH':actual[2],
+                           'basePS':base[0],'baseER':base[1],'baseAH':base[2]})
+          Z=pd.DataFrame(out3)
+          print('STAGE3_ACTION_COUNTS',Z.action.value_counts().sort_index().to_dict())
+          print('STAGE3_SUMMARY')
+          print(Z.groupby('condition').agg(n=('rid','size'),mean_action=('action','mean'),
+                PS=('PS','mean'),ER=('ER','mean'),AH=('AH','mean'),
+                basePS=('basePS','mean'),baseER=('baseER','mean'),baseAH=('baseAH','mean')).to_string())
+          print('STAGE3_OVERALL',Z.PS.mean(),Z.ER.mean(),Z.AH.mean(),
+                Z.basePS.mean(),Z.baseER.mean(),Z.baseAH.mean(),Z.action.mean())
+          for met,bm in [('PS','basePS'),('ER','baseER'),('AH','baseAH')]:
+              d=(Z[met]-Z[bm]).to_numpy(float)
+              ix=rng.integers(0,len(d),(10000,len(d))); zz=d[ix].mean(1)
+              lo,hi=np.quantile(zz,[.025,.975])
+              print('STAGE3_BOOT',met,'DIFF',d.mean(),'CI',lo,hi,
+                    'IMPROVED',int((d>1e-12).sum()),'HARMED',int((d<-1e-12).sum()))
+          PY
+          python /tmp/parameter_free_stage23.py
