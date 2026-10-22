@@ -3,15 +3,220 @@ on:
   push:
     branches: [main]
 jobs:
-  inspect:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect Stage II assets
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Complete Stage II on real DrugMechDB
         run: |
           unzip -q iclr2027_review_package_v3.zip -d /tmp/pkg
           cd /tmp/pkg/iclr2027_review_package
-          echo "=== STAGE2 FILES ==="
-          find . -type f | grep -Ei 'stage2|bridge.*marginal|conditional|selection|ranking|semantic_bridge' | sort | head -1000
-          echo "=== POSSIBLE SCRIPTS ==="
-          grep -RIlE 'roc_auc_score|average_precision_score|spearman|marginal_delta|conditional' code methods portable paper_checks supplementary_code 2>/dev/null | sort | head -500
+          pip -q install pandas numpy networkx scikit-learn scipy
+          cat > /tmp/stage2_complete.py <<'PY'
+          import json, math, itertools
+          from pathlib import Path
+          from collections import defaultdict
+          import numpy as np, pandas as pd, networkx as nx
+          from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
+          from sklearn.metrics import roc_auc_score, average_precision_score
+          from scipy.stats import spearmanr
+
+          BASE=Path('/tmp/pkg/iclr2027_review_package')
+          D=BASE/'data/processed/drugmechdb'
+          paths=json.load(open(BASE/'data/raw/drugmechdb/indication_paths.json'))
+          man=pd.read_csv(D/'benchmark_manifest.csv')
+          cand=pd.read_csv(D/'semantic_bridge_predictions.csv')
+
+          # graph + gold
+          G=nx.MultiDiGraph(); gold={}; ntype={}
+          for rec in paths:
+              rid=str(rec.get('graph',{}).get('_id','')); links=[]
+              for n in rec.get('nodes',[]):
+                  nid=str(n['id']); ntype[nid]=str(n.get('label','Unknown'))
+                  if nid not in G: G.add_node(nid)
+              for e in rec.get('links',[]):
+                  u,v,r=str(e['source']),str(e['target']),str(e.get('key','unknown'))
+                  G.add_edge(u,v,relation=r); links.append((u,v,r))
+              if rid: gold[rid]=links
+          OUT=defaultdict(list)
+          for u,v,d in G.edges(data=True):
+              t=(v,str(d.get('relation','unknown')))
+              if t not in OUT[u]: OUT[u].append(t)
+          MAXLOG=max(math.log1p(G.in_degree(n)+G.out_degree(n)) for n in G.nodes) or 1
+          def relq(rel):
+              s=rel.lower().replace('_',' ')
+              if any(k in s for k in ['causes','prevents','treats','therapeutic']): return 1.
+              if any(k in s for k in ['regulates','activity','abundance','inhibits','stimulates','affects']): return .88
+              if any(k in s for k in ['participates','produces','has output','capable of','precedes']): return .72
+              if any(k in s for k in ['occurs in','located in','location of','correlated','associated']): return .52
+              return .62
+          def lgs(v,r):
+              deg=math.log1p(G.in_degree(v)+G.out_degree(v))/MAXLOG
+              return .82*relq(r)+.18*(1-deg)
+          def bss(nodes,conf):
+              if not conf:return 0.
+              reached=[n for n in nodes if n in conf]
+              if not reached:return 0.
+              uq=list(dict.fromkeys(reached)); cov=len(uq)/max(1,len(conf))
+              mc=float(np.mean([conf[n] for n in uq])); cur=conf.get(nodes[-1],0.)
+              recent=sum(1 for n in nodes[-2:] if n in conf)/2
+              sat=.65 if len(uq)<=1 else (.85 if len(uq)==2 else 1.)
+              return min(1.,max(0.,(.45*cov+.25*mc+.15*cur+.15*recent)*sat))
+          def search(source,target,conf,g=.30):
+              beam=[(0.,(source,),(),())]; gen={source}; ex=0; best=None
+              for _ in range(8):
+                  nxt=[]
+                  for _,pn,pr,pg in beam:
+                      u=pn[-1]
+                      for v,r in OUT.get(u,[]):
+                          if ex>=20:break
+                          ex+=1
+                          if v in pn:continue
+                          if v not in gen and len(gen)>=14:continue
+                          gen.add(v); nn=pn+(v,); rr=pr+(r,); gg=pg+(lgs(v,r),)
+                          gs=float(np.mean(gg)); bs=bss(nn,conf)
+                          sc=(1-g)*gs+g*bs-.012*len(rr); st=(sc,nn,rr,gg); nxt.append(st)
+                          if v==target and (best is None or sc>best[0]):best=st
+                      if ex>=20:break
+                  if best is not None:break
+                  if not nxt:break
+                  nxt.sort(key=lambda x:(x[0],-len(x[1])),reverse=True); beam=nxt[:2]
+              z=best if best is not None else (max(beam,key=lambda x:x[0]) if beam else (0.,(source,),(),()))
+              _,pn,rr,_=z; edges=[(pn[i],pn[i+1],rr[i]) for i in range(len(rr))]
+              return float(pn[-1]==target),edges,float(False)
+          MAN={(r.task,r.rid):r for r in man.itertuples(index=False)}
+          CANDS={(k[0],k[1],k[2],k[3]):d.drop_duplicates('node').copy() for k,d in cand.groupby(['task','rid','split','condition'])}
+
+          def eval_set(row,nodes):
+              conf={str(n):1.0 for n in nodes}
+              ps,edges,_=search(str(row.source),str(row.target),conf,.30)
+              ge=set(gold[str(row.rid)]); er=len(ge & set(edges))/max(1,len(ge))
+              return ps,er,.7*ps+.3*er
+          def node_deg(n):
+              return math.log1p(G.in_degree(str(n))+G.out_degree(str(n)))/MAXLOG if str(n) in G else 0.
+          def adj(a,b):
+              return float(G.has_edge(str(a),str(b)) or G.has_edge(str(b),str(a)))
+
+          # exact conditional marginal samples, preserving official split
+          samples=[]
+          for key,d in CANDS.items():
+              task,rid,split,cond=key; row=MAN[(task,rid)]
+              nodes=d.node.astype(str).tolist(); confs=dict(zip(d.node.astype(str),d.pred_semantic_conf.astype(float)))
+              if len(nodes)<1:continue
+              cache={}
+              for r in range(min(2,len(nodes))+1):
+                  for H in itertools.combinations(nodes,r):
+                      cache[tuple(sorted(H))]=eval_set(row,H)
+              for r in range(min(2,len(nodes))):
+                  for H in itertools.combinations(nodes,r):
+                      H=tuple(sorted(H)); base=cache[H]
+                      for h in nodes:
+                          if h in H:continue
+                          Hp=tuple(sorted(H+(h,))); plus=cache[Hp]
+                          sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
+                          samples.append({
+                            'task':task,'rid':rid,'split':split,'condition':cond,'candidate':h,'selected_size':len(H),
+                            'pool_size':len(nodes),'cand_conf':confs[h],'cand_deg':node_deg(h),
+                            'sel_conf_mean':float(np.mean(sd)) if sd else 0.,'sel_conf_max':max(sd) if sd else 0.,
+                            'sel_conf_min':min(sd) if sd else 0.,'sel_conf_std':float(np.std(sd)) if sd else 0.,
+                            'sel_deg_mean':float(np.mean(dd)) if dd else 0.,
+                            'adj_count':sum(adj(h,x) for x in H),
+                            'conf_gap':confs[h]-(float(np.mean(sd)) if sd else 0.),
+                            'marginal_delta':plus[2]-base[2]
+                          })
+          S=pd.DataFrame(samples)
+          S['positive']=(S.marginal_delta>1e-12).astype(int)
+          print('SAMPLES',len(S),'TRAIN',sum(S.split=='train'),'VAL',sum(S.split=='val'),'TEST',sum(S.split=='test'))
+          print('TEST_POS_RATE',S.loc[S.split=='test','positive'].mean())
+          task_d=pd.get_dummies(S.task,prefix='task',dtype=float)
+          Xbase=pd.concat([S[['cand_conf','cand_deg','pool_size']].reset_index(drop=True),task_d.reset_index(drop=True)],axis=1)
+          Xsize=pd.concat([Xbase,S[['selected_size']].reset_index(drop=True)],axis=1)
+          Xfull=pd.concat([Xsize,S[['sel_conf_mean','sel_conf_max','sel_conf_min','sel_conf_std','sel_deg_mean','adj_count','conf_gap']].reset_index(drop=True)],axis=1)
+
+          def fit_eval(name,X):
+              tr=S.split.eq('train').to_numpy(); va=S.split.eq('val').to_numpy(); te=S.split.eq('test').to_numpy()
+              y=S.marginal_delta.to_numpy(float); yc=S.positive.to_numpy(int)
+              best=None
+              for depth,lr,l2 in [(2,.05,.1),(3,.05,.1),(3,.08,.3),(4,.05,.5)]:
+                  reg=HistGradientBoostingRegressor(max_depth=depth,learning_rate=lr,l2_regularization=l2,max_iter=250,random_state=20261022).fit(X[tr],y[tr])
+                  clf=HistGradientBoostingClassifier(max_depth=depth,learning_rate=lr,l2_regularization=l2,max_iter=250,random_state=20261022).fit(X[tr],yc[tr])
+                  pr=reg.predict(X[va]); pc=clf.predict_proba(X[va])[:,1]
+                  rho=spearmanr(y[va],pr).statistic
+                  auc=roc_auc_score(yc[va],pc); ap=average_precision_score(yc[va],pc)
+                  score=(0 if np.isnan(rho) else rho)+auc+ap
+                  if best is None or score>best[0]:best=(score,(depth,lr,l2),reg,clf)
+              _,hp,reg,clf=best
+              pr=reg.predict(X[te]); pc=clf.predict_proba(X[te])[:,1]
+              auc=roc_auc_score(yc[te],pc); ap=average_precision_score(yc[te],pc); rho=spearmanr(y[te],pr).statistic
+              active=np.abs(y[te])>1e-12
+              arho=spearmanr(y[te][active],pr[active]).statistic if active.sum()>2 else np.nan
+              sign=((pr>0)==(y[te]>0)).mean()
+              print('PRED',name,'HP',hp,'N',te.sum(),'AUROC',auc,'AUPRC',ap,'SPEARMAN',rho,'ACTIVE_SPEARMAN',arho,'SIGN_ACC',sign)
+              return reg,clf,X.columns.tolist()
+          reg_i,clf_i,cols_i=fit_eval('Independent',Xbase)
+          reg_s,clf_s,cols_s=fit_eval('SizeOnly',Xsize)
+          reg_f,clf_f,cols_f=fit_eval('FullConditional',Xfull)
+
+          # sequential test selection K=1,2 using models. Independent baseline = semantic confidence.
+          # conditional predictor uses full regressor and the same feature definition.
+          def feat_for(task,pool,confs,h,H,kind='full'):
+              base={'cand_conf':confs[h],'cand_deg':node_deg(h),'pool_size':len(pool),
+                    'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),'task_Process':float(task=='Process'),
+                    'selected_size':len(H)}
+              sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
+              base.update(sel_conf_mean=float(np.mean(sd)) if sd else 0.,sel_conf_max=max(sd) if sd else 0.,
+                sel_conf_min=min(sd) if sd else 0.,sel_conf_std=float(np.std(sd)) if sd else 0.,
+                sel_deg_mean=float(np.mean(dd)) if dd else 0.,adj_count=sum(adj(h,x) for x in H),
+                conf_gap=confs[h]-(float(np.mean(sd)) if sd else 0.))
+              return base
+          def pred_full(task,pool,confs,h,H):
+              d=feat_for(task,pool,confs,h,H)
+              return float(reg_f.predict(pd.DataFrame([[d.get(c,0.) for c in cols_f]],columns=cols_f))[0])
+          res=[]
+          for key,d in CANDS.items():
+              task,rid,split,cond=key
+              if split!='test':continue
+              row=MAN[(task,rid)]; pool=d.node.astype(str).tolist(); confs=dict(zip(pool,d.pred_semantic_conf.astype(float)))
+              for K in [1,2]:
+                  if len(pool)<K:continue
+                  ind=sorted(pool,key=lambda h:confs[h],reverse=True)[:K]
+                  H=[]
+                  for _ in range(K):
+                      rem=[h for h in pool if h not in H]
+                      h=max(rem,key=lambda x:pred_full(task,pool,confs,x,H)); H.append(h)
+                  # oracle sequential true marginal
+                  O=[]
+                  for _ in range(K):
+                      base=eval_set(row,O)[2]; rem=[h for h in pool if h not in O]
+                      h=max(rem,key=lambda x:eval_set(row,O+[x])[2]-base); O.append(h)
+                  for method,sel in [('Independent',ind),('Conditional',H),('Oracle',O)]:
+                      ps,er,u=eval_set(row,sel)
+                      res.append({'task':task,'rid':rid,'condition':cond,'K':K,'method':method,'PS':ps,'ER':er,'Utility':u})
+          R=pd.DataFrame(res)
+          print('SELECTION_SUMMARY')
+          print(R.groupby(['K','method']).agg(n=('rid','size'),PS=('PS','mean'),ER=('ER','mean'),Utility=('Utility','mean')).to_string())
+          # 10k paired bootstrap Conditional - Independent
+          rng=np.random.default_rng(20261022)
+          for K in [1,2]:
+              a=R[(R.K==K)&(R.method=='Conditional')]
+              b=R[(R.K==K)&(R.method=='Independent')]
+              m=a.merge(b,on=['task','rid','condition','K'],suffixes=('_c','_i'))
+              for met in ['PS','ER','Utility']:
+                  d=(m[f'{met}_c']-m[f'{met}_i']).to_numpy(float)
+                  ix=rng.integers(0,len(d),(10000,len(d))); z=d[ix].mean(1)
+                  lo,hi=np.quantile(z,[.025,.975])
+                  print('BOOT','K',K,met,'DIFF',d.mean(),'CI',lo,hi,'N',len(d))
+          # diagnostics
+          A=S[(S.selected_size>0)&(np.abs(S.marginal_delta)>1e-12)].copy()
+          # independent delta is exact empty-H utility for same query/candidate
+          empty=S[S.selected_size==0][['task','rid','condition','candidate','marginal_delta']].rename(columns={'marginal_delta':'ind_delta'})
+          A=A.merge(empty,on=['task','rid','condition','candidate'],how='left')
+          flip=((A.ind_delta>0)!=(A.marginal_delta>0)).mean()
+          A2=A[A.selected_size==2]; flip2=((A2.ind_delta>0)!=(A2.marginal_delta>0)).mean()
+          print('SIGN_FLIP_ACTIVE',flip,'H2',flip2,'N_ACTIVE',len(A),'N_H2',len(A2))
+          PY
+          python /tmp/stage2_complete.py
