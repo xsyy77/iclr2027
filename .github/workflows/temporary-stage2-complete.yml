@@ -108,10 +108,10 @@ jobs:
               nodes=d.node.astype(str).tolist(); confs=dict(zip(d.node.astype(str),d.pred_semantic_conf.astype(float)))
               if len(nodes)<1:continue
               cache={}
-              for r in range(min(2,len(nodes))+1):
+              for r in range(min(3,len(nodes))+1):
                   for H in itertools.combinations(nodes,r):
                       cache[tuple(sorted(H))]=eval_set(row,H)
-              for r in range(min(2,len(nodes))):
+              for r in range(min(3,len(nodes))):
                   for H in itertools.combinations(nodes,r):
                       H=tuple(sorted(H)); base=cache[H]
                       for h in nodes:
@@ -161,8 +161,8 @@ jobs:
           reg_s,clf_s,cols_s=fit_eval('SizeOnly',Xsize)
           reg_f,clf_f,cols_f=fit_eval('FullConditional',Xfull)
 
-          # sequential test selection K=1,2 using models. Independent baseline = semantic confidence.
-          # conditional predictor uses full regressor and the same feature definition.
+          # Sequential selection. Soft conditional policy blends independent reliability and
+          # full conditional probability; lambda is selected on validation only.
           def feat_for(task,pool,confs,h,H,kind='full'):
               base={'cand_conf':confs[h],'cand_deg':node_deg(h),'pool_size':len(pool),
                     'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),'task_Process':float(task=='Process'),
@@ -176,6 +176,39 @@ jobs:
           def pred_full(task,pool,confs,h,H):
               d=feat_for(task,pool,confs,h,H)
               return float(reg_f.predict(pd.DataFrame([[d.get(c,0.) for c in cols_f]],columns=cols_f))[0])
+          def pred_prob(task,pool,confs,h,H):
+              d=feat_for(task,pool,confs,h,H)
+              X=pd.DataFrame([[d.get(c,0.) for c in cols_f]],columns=cols_f)
+              return float(clf_f.predict_proba(X)[0,1])
+          def choose_soft(task,pool,confs,K,lam):
+              H=[]
+              for _ in range(K):
+                  rem=[h for h in pool if h not in H]
+                  ps=np.array([pred_prob(task,pool,confs,h,H) for h in rem],float)
+                  cs=np.array([confs[h] for h in rem],float)
+                  def mm(x):
+                      z=x.max()-x.min()
+                      return np.ones_like(x)*.5 if z<1e-12 else (x-x.min())/z
+                  sc=lam*mm(ps)+(1-lam)*mm(cs)
+                  H.append(rem[int(np.argmax(sc))])
+              return H
+          # validation-only lambda selection
+          chosen_lambda={}
+          for K in [1,2]:
+              grid=[]
+              for lam in [0.,.25,.5,.75,1.]:
+                  vals=[]
+                  for key,d in CANDS.items():
+                      task,rid,split,cond=key
+                      if split!='val':continue
+                      pool=d.node.astype(str).tolist()
+                      if len(pool)<K:continue
+                      row=MAN[(task,rid)]; confs=dict(zip(pool,d.pred_semantic_conf.astype(float)))
+                      H=choose_soft(task,pool,confs,K,lam); vals.append(eval_set(row,H))
+                  A=np.asarray(vals,float)
+                  grid.append((.7*A[:,0].mean()+.3*A[:,1].mean(),A[:,0].mean(),A[:,1].mean(),lam))
+              grid=sorted(grid,reverse=True); chosen_lambda[K]=grid[0][3]
+              print('LAMBDA_VAL','K',K,'BEST',grid[0],'ALL',grid)
           res=[]
           for key,d in CANDS.items():
               task,rid,split,cond=key
@@ -184,11 +217,7 @@ jobs:
               for K in [1,2]:
                   if len(pool)<K:continue
                   ind=sorted(pool,key=lambda h:confs[h],reverse=True)[:K]
-                  H=[]
-                  for _ in range(K):
-                      rem=[h for h in pool if h not in H]
-                      h=max(rem,key=lambda x:pred_full(task,pool,confs,x,H)); H.append(h)
-                  # oracle sequential true marginal
+                  H=choose_soft(task,pool,confs,K,chosen_lambda[K])
                   O=[]
                   for _ in range(K):
                       base=eval_set(row,O)[2]; rem=[h for h in pool if h not in O]
