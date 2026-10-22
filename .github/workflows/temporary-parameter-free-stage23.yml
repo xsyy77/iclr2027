@@ -1,4 +1,4 @@
-name: temporary-parameter-free-stage23-v3
+name: temporary-parameter-free-stage23-v4
 on:
   push:
     branches: [main]
@@ -349,5 +349,27 @@ jobs:
               lo,hi=np.quantile(zz,[.025,.975])
               print('STAGE3_BOOT',met,'DIFF',d.mean(),'CI',lo,hi,
                     'IMPROVED',int((d>1e-12).sum()),'HARMED',int((d<-1e-12).sum()))
+
+          # Matched shuffled-action control for the NEW parameter-free Stage III.
+          # Preserve the exact multiset of selected actions within each condition,
+          # but randomly reassign them to queries in that condition.
+          testT=T[T.split=='test'].copy()
+          lookup={(r.task,r.rid,r.condition,float(r.action)):(r.PS,r.ER,r.AH) for r in testT.itertuples(index=False)}
+          reps=[]
+          for rep in range(500):
+              ps=[];er=[];ah=[]
+              for cond,Q0 in Z.groupby('condition'):
+                  Q=Q0.reset_index(drop=True)
+                  acts=Q.action.to_numpy(float).copy(); rng.shuffle(acts)
+                  for i,r in Q.iterrows():
+                      z=lookup[(r.task,r.rid,r.condition,float(acts[i]))]
+                      ps.append(z[0]);er.append(z[1]);ah.append(z[2])
+              reps.append((np.mean(ps),np.mean(er),np.mean(ah)))
+          RR=np.asarray(reps,float)
+          for j,met in enumerate(['PS','ER','AH']):
+              actual=float(Z[met].mean())
+              print('STAGE3_SHUFFLE',met,'MEAN',RR[:,j].mean(),'SD',RR[:,j].std(ddof=1),
+                    'Q025',np.quantile(RR[:,j],.025),'Q975',np.quantile(RR[:,j],.975),
+                    'ACTUAL',actual,'ACTUAL_MINUS_MEAN',actual-RR[:,j].mean())
           PY
           python /tmp/parameter_free_stage23.py
