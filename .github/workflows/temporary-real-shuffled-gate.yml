@@ -8,11 +8,138 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Unpack v3 and inspect
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run exact new shuffled-gate control
         run: |
           unzip -q iclr2027_review_package_v3.zip -d /tmp/pkg
           cd /tmp/pkg/iclr2027_review_package
-          echo "===ROOT==="
-          find . -maxdepth 2 -type f | sort | head -300
-          echo "===RELEVANT==="
-          find . -type f | grep -Ei 'manifest|semantic_bridge|indication_paths|safe|gate|stage3|condition' | sort | head -500
+          pip -q install pandas numpy networkx
+          cat > /tmp/run_shuffled.py <<'PY'
+          import json, math
+          from collections import defaultdict
+          from pathlib import Path
+          import numpy as np, pandas as pd, networkx as nx
+
+          BASE=Path('/tmp/pkg/iclr2027_review_package')
+          D=BASE/'data/processed/drugmechdb'
+          paths=json.load(open(BASE/'data/raw/drugmechdb/indication_paths.json'))
+          manifest=pd.read_csv(D/'benchmark_manifest.csv')
+          cand=pd.read_csv(D/'semantic_bridge_predictions.csv')
+
+          G=nx.MultiDiGraph(); gold={}
+          for rec in paths:
+              rid=str(rec.get('graph',{}).get('_id',''))
+              nodes={str(n['id']): {'name':str(n.get('name','')), 'type':str(n.get('label','Unknown'))} for n in rec.get('nodes',[])}
+              links=[]
+              for nid,d in nodes.items():
+                  if nid not in G: G.add_node(nid,**d)
+              for e in rec.get('links',[]):
+                  u,v,rel=str(e['source']),str(e['target']),str(e.get('key','unknown'))
+                  G.add_edge(u,v,relation=rel); links.append((u,v,rel))
+              if rid: gold[rid]={'nodes':nodes,'links':links}
+
+          OUT=defaultdict(list)
+          for u,v,d in G.edges(data=True):
+              tup=(v,str(d.get('relation','unknown')))
+              if tup not in OUT[u]: OUT[u].append(tup)
+          MAXLOG=max(math.log1p(G.in_degree(n)+G.out_degree(n)) for n in G.nodes) or 1
+
+          def rel_quality(rel):
+              s=rel.lower().replace('_',' ')
+              if any(k in s for k in ['causes','prevents','treats','therapeutic']): return 1.00
+              if any(k in s for k in ['regulates','activity','abundance','inhibits','stimulates','affects']): return 0.88
+              if any(k in s for k in ['participates','produces','has output','capable of','precedes']): return 0.72
+              if any(k in s for k in ['occurs in','located in','location of','correlated','associated']): return 0.52
+              return 0.62
+          def local_graph_score(v,rel):
+              deg=math.log1p(G.in_degree(v)+G.out_degree(v))/MAXLOG
+              return 0.82*rel_quality(rel)+0.18*(1.0-deg)
+          def bridge_state_score(path_nodes, conf):
+              if not conf: return 0.0
+              reached=[n for n in path_nodes if n in conf]
+              if not reached: return 0.0
+              uniq=list(dict.fromkeys(reached)); cov=len(uniq)/max(1,len(conf))
+              mean_c=float(np.mean([conf[n] for n in uniq])); cur=conf.get(path_nodes[-1],0.0)
+              recent=sum(1 for n in path_nodes[-2:] if n in conf)/2.0
+              sat=0.65 if len(uniq)<=1 else (0.85 if len(uniq)==2 else 1.0)
+              return min(1.0,max(0.0,(0.45*cov+0.25*mean_c+0.15*cur+0.15*recent)*sat))
+          def run_search(source,target,conf,g,beam=2,max_hops=8,node_budget=14,edge_budget=20):
+              beam_states=[(0.0,(source,),(),())]; generated={source}; expanded=0; best_target=None
+              for _ in range(max_hops):
+                  nxt=[]
+                  for _,pn,pr,pg in beam_states:
+                      u=pn[-1]
+                      for v,rel in OUT.get(u,[]):
+                          if expanded>=edge_budget: break
+                          expanded+=1
+                          if v in pn: continue
+                          if v not in generated and len(generated)>=node_budget: continue
+                          generated.add(v)
+                          nn=pn+(v,); rr=pr+(rel,); gg=pg+(local_graph_score(v,rel),)
+                          gs=float(np.mean(gg)) if gg else 0.0; bs=bridge_state_score(nn,conf)
+                          score=(1-g)*gs+g*bs-0.012*len(rr); st=(score,nn,rr,gg); nxt.append(st)
+                          if v==target and (best_target is None or score>best_target[0]): best_target=st
+                      if expanded>=edge_budget: break
+                  if best_target is not None: break
+                  if not nxt: break
+                  nxt.sort(key=lambda x:(x[0],-len(x[1])),reverse=True); beam_states=nxt[:beam]
+              best=best_target if best_target is not None else (max(beam_states,key=lambda x:x[0]) if beam_states else (0,(source,),(),()))
+              _,pn,rr,_=best
+              edges=[(pn[i],pn[i+1],rr[i]) for i in range(len(rr))]
+              return {'nodes':list(pn),'edges':edges,'found':bool(pn and pn[-1]==target)}
+          def eval_run(row,conf,g):
+              r=run_search(str(row.source),str(row.target),conf,float(g))
+              gedges=set(gold[str(row.rid)]['links']); redges=set(r['edges'])
+              return float(r['found']),len(gedges & redges)/max(1,len(gedges)),float(str(row.answer) in set(r['nodes']))
+
+          MAN={(r.task,r.rid):r for r in manifest.itertuples(index=False)}
+          CAND_GROUP={(k[0],k[1],k[2],k[3]):d.copy() for k,d in cand.groupby(['task','rid','split','condition'])}
+
+          rows=[]
+          for key,d in CAND_GROUP.items():
+              task,rid,split,cond=key
+              if split!='test': continue
+              row=MAN[(task,rid)]
+              dd=d.drop_duplicates('node')
+              conf=dict(zip(dd.node.astype(str),dd.pred_semantic_conf.astype(float)))
+              a=eval_run(row,conf,0.30); b=eval_run(row,conf,0.45)
+              rows.append({'task':task,'rid':rid,'condition':cond,
+                           'ps03':a[0],'er03':a[1],'ah03':a[2],
+                           'ps045':b[0],'er045':b[1],'ah045':b[2]})
+          z=pd.DataFrame(rows)
+          print('N_ROWS',len(z))
+          print('BASELINE_G03')
+          print(z.groupby('condition').agg(n=('rid','size'),PS=('ps03','mean'),ER=('er03','mean'),AH=('ah03','mean')).to_string())
+          print('BASELINE_ALL',z.ps03.mean(),z.er03.mean(),z.ah03.mean())
+
+          # Exact high-g counts from the new conservative safety policy saved on 2026-10-22.
+          high_counts={'Clean':7,'25%':8,'50%':12,'75%':17,'Random':9}
+          rng=np.random.default_rng(20261022)
+          reps=[]
+          for rep in range(500):
+              ps=[]; er=[]; ah=[]
+              for cond,k in high_counts.items():
+                  s=z[z.condition==cond].copy().reset_index(drop=True)
+                  chosen=set(rng.choice(len(s),size=k,replace=False).tolist())
+                  for i,r in s.iterrows():
+                      hi=i in chosen
+                      ps.append(r.ps045 if hi else r.ps03)
+                      er.append(r.er045 if hi else r.er03)
+                      ah.append(r.ah045 if hi else r.ah03)
+              reps.append((np.mean(ps),np.mean(er),np.mean(ah)))
+          R=np.asarray(reps,float)
+          print('SHUFFLED500')
+          for j,name in enumerate(['PS','ER','AH']):
+              print(name,'mean',R[:,j].mean(),'sd',R[:,j].std(ddof=1),
+                    'q025',np.quantile(R[:,j],.025),'q975',np.quantile(R[:,j],.975))
+
+          # Actual new Safety Gate summary from saved 2026-10-22 result.
+          safety={'PS':0.3080645161290323,'ER':0.434010752688172,
+                  'Clean_PS':0.3951612903225806,'Clean_ER':0.5933832703092041}
+          print('SAFETY_REFERENCE',safety)
+          print('FULL_MINUS_SHUFFLED_ER',safety['ER']-R[:,1].mean())
+          print('FULL_MINUS_SHUFFLED_PS',safety['PS']-R[:,0].mean())
+          PY
+          python /tmp/run_shuffled.py
