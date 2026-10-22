@@ -1,4 +1,4 @@
-name: temporary-parameter-free-stage23
+name: temporary-parameter-free-stage23-v2
 on:
   push:
     branches: [main]
@@ -21,7 +21,7 @@ jobs:
           from collections import defaultdict
           from pathlib import Path
           import numpy as np, pandas as pd, networkx as nx
-          from sklearn.ensemble import HistGradientBoostingRegressor
+          from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
           from scipy.stats import spearmanr
 
           BASE=Path('/tmp/pkg/iclr2027_review_package')
@@ -167,6 +167,14 @@ jobs:
           ind_ps,ind_er=fit_pair(X_ind)
           con_ps,con_er=fit_pair(X_cond)
 
+          # Parameter-free beneficial-state classifier:
+          # beneficial iff adding h does not reduce PS and strictly improves ER.
+          ybenef=((S.dPS.to_numpy()>=0) & (S.dER.to_numpy()>0)).astype(int)
+          ind_b=HistGradientBoostingClassifier(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                               max_iter=250,random_state=20261022).fit(X_ind[tr],ybenef[tr])
+          con_b=HistGradientBoostingClassifier(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                               max_iter=250,random_state=20261022).fit(X_cond[tr],ybenef[tr])
+
           def report_pred(name,X,mps,mer):
               yps=S.dPS.to_numpy()[te]; yer=S.dER.to_numpy()[te]
               pps=mps.predict(X[te]); per=mer.predict(X[te])
@@ -197,26 +205,27 @@ jobs:
               return pd.DataFrame([[d.get(c,0.) for c in cols]],columns=cols)
           def select_model(task,pool,confs,K,conditional):
               H=[]
-              mps,mer,cols=(con_ps,con_er,con_cols) if conditional else (ind_ps,ind_er,ind_cols)
+              mb,mer,cols=(con_b,con_er,con_cols) if conditional else (ind_b,ind_er,ind_cols)
               static={}
               if not conditional:
                   for h in pool:
                       xx=feat(task,pool,confs,h,[],cols)
-                      static[h]=(float(mps.predict(xx)[0]),float(mer.predict(xx)[0]))
+                      static[h]=(int(mb.predict(xx)[0]),float(mb.predict_proba(xx)[0,1]),float(mer.predict(xx)[0]))
               for _ in range(K):
                   rem=[h for h in pool if h not in H]
                   scored=[]
                   for h in rem:
                       if conditional:
                           xx=feat(task,pool,confs,h,H,cols)
-                          dps=float(mps.predict(xx)[0]); der=float(mer.predict(xx)[0])
+                          label=int(mb.predict(xx)[0]); prob=float(mb.predict_proba(xx)[0,1]); der=float(mer.predict(xx)[0])
                       else:
-                          dps,der=static[h]
-                      # Parameter-free decision: only predicted non-harm and positive evidence gain.
-                      if dps>=0 and der>0:
-                          scored.append((der,h))
+                          label,prob,der=static[h]
+                      # No manually chosen threshold/weight: use model-predicted beneficial class.
+                      # Among predicted-beneficial candidates, maximize predicted evidence gain.
+                      if label==1:
+                          scored.append((der,prob,h))
                   if not scored: break
-                  H.append(max(scored,key=lambda z:z[0])[1])
+                  H.append(max(scored,key=lambda z:(z[0],z[1]))[2])
               return H
           def select_oracle(row,pool,confs,K):
               H=[]
