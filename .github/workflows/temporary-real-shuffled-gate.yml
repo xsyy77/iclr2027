@@ -1,0 +1,18 @@
+name: temporary-real-shuffled-gate
+on:
+  push:
+    branches: [main]
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack v3 and inspect
+        run: |
+          unzip -q iclr2027_review_package_v3.zip -d /tmp/pkg
+          cd /tmp/pkg/iclr2027_review_package
+          echo "===ROOT==="
+          find . -maxdepth 2 -type f | sort | head -300
+          echo "===RELEVANT==="
+          find . -type f | grep -Ei 'manifest|semantic_bridge|indication_paths|safe|gate|stage3|condition' | sort | head -500
