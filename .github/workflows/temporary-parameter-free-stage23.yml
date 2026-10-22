@@ -1,4 +1,4 @@
-name: temporary-parameter-free-stage23-v2
+name: temporary-parameter-free-stage23-v3
 on:
   push:
     branches: [main]
@@ -112,30 +112,31 @@ jobs:
               return float(G.has_edge(str(a),str(b)) or G.has_edge(str(b),str(a)))
 
           # =========================================================
-          # STAGE II: no scalar utility, no lambda, no weighted target
-          # Targets are separate downstream deltas: DeltaPS and DeltaER.
+          # STAGE II: parameter-free Pareto pairwise ranking.
+          # No scalar utility, no lambda, no hand-set threshold.
           # =========================================================
           samples=[]
-          cache={}
+          state_map={}
           for key,d in CANDS.items():
               task,rid,split,cond=key; row=MAN[(task,rid)]
               pool=d.node.astype(str).tolist()
               confs=dict(zip(d.node.astype(str),d.pred_semantic_conf.astype(float)))
+              cache={}
               for r in range(min(3,len(pool))+1):
                   for H in itertools.combinations(pool,r):
-                      hs=tuple(sorted(H))
-                      cache[(key,hs)]=eval_set(row,hs,.30,confs)
-              for r in range(min(3,len(pool))):
+                      hs=tuple(sorted(H)); cache[hs]=eval_set(row,hs,.30,confs)
+              for r in range(min(2,len(pool))):
                   for H in itertools.combinations(pool,r):
-                      H=tuple(sorted(H)); base=cache[(key,H)]
+                      H=tuple(sorted(H)); base=cache[H]
+                      feats={}
+                      outs={}
                       for h in pool:
                           if h in H: continue
-                          Hp=tuple(sorted(H+(h,))); plus=cache[(key,Hp)]
+                          Hp=tuple(sorted(H+(h,))); plus=cache[Hp]
                           sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
-                          samples.append({
-                              'task':task,'rid':rid,'split':split,'condition':cond,
-                              'candidate':h,'selected_size':len(H),'pool_size':len(pool),
-                              'cand_conf':confs[h],'cand_deg':node_deg(h),
+                          feats[h]={
+                              'cand_conf':confs[h],'cand_deg':node_deg(h),'pool_size':len(pool),
+                              'selected_size':len(H),
                               'sel_conf_mean':float(np.mean(sd)) if sd else 0.,
                               'sel_conf_max':max(sd) if sd else 0.,
                               'sel_conf_min':min(sd) if sd else 0.,
@@ -143,102 +144,97 @@ jobs:
                               'sel_deg_mean':float(np.mean(dd)) if dd else 0.,
                               'adj_count':sum(adj(h,x) for x in H),
                               'conf_gap':confs[h]-(float(np.mean(sd)) if sd else 0.),
-                              'dPS':plus[0]-base[0],
-                              'dER':plus[1]-base[1]
-                          })
-          S=pd.DataFrame(samples)
-          task_d=pd.get_dummies(S.task,prefix='task',dtype=float)
-          X_ind=pd.concat([
-              S[['cand_conf','cand_deg','pool_size']].reset_index(drop=True),
-              task_d.reset_index(drop=True)],axis=1)
-          X_cond=pd.concat([
-              X_ind,
-              S[['selected_size','sel_conf_mean','sel_conf_max','sel_conf_min','sel_conf_std',
-                 'sel_deg_mean','adj_count','conf_gap']].reset_index(drop=True)],axis=1)
-          tr=S.split.eq('train').to_numpy(); te=S.split.eq('test').to_numpy()
+                              'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),
+                              'task_Process':float(task=='Process')
+                          }
+                          outs[h]=(plus[0]-base[0],plus[1]-base[1])
+                      state_map[(task,rid,split,cond,H)]=(pool,confs,feats,outs)
+                      rem=list(feats)
+                      for i in range(len(rem)):
+                          for j in range(i+1,len(rem)):
+                              a,b=rem[i],rem[j]; aps,aer=outs[a]; bps,ber=outs[b]
+                              a_dom=(aps>=bps and aer>=ber and (aps>bps or aer>ber))
+                              b_dom=(bps>=aps and ber>=aer and (bps>aps or ber>aer))
+                              if not (a_dom or b_dom): continue
+                              # add both directions for symmetry
+                              for left,right,label in [(a,b,int(a_dom)),(b,a,int(b_dom))]:
+                                  rec={'task':task,'rid':rid,'split':split,'condition':cond,'H':H,
+                                       'left':left,'right':right,'label':label}
+                                  fl,fr=feats[left],feats[right]
+                                  for k,v in fl.items(): rec['d_'+k]=v-fr[k]
+                                  samples.append(rec)
+          P=pd.DataFrame(samples)
+          ind_cols=['d_cand_conf','d_cand_deg','d_pool_size','d_task_Gene','d_task_Metabolite','d_task_Process']
+          con_cols=[x for x in P.columns if x.startswith('d_')]
+          tr=P.split.eq('train').to_numpy(); te=P.split.eq('test').to_numpy()
+          y=P.label.to_numpy(int)
+          def train_pair(cols):
+              return HistGradientBoostingClassifier(max_depth=3,learning_rate=.05,l2_regularization=.1,
+                                                    max_iter=250,random_state=20261022).fit(P[cols][tr],y[tr])
+          pind=train_pair(ind_cols); pcon=train_pair(con_cols)
+          for name,model,cols in [('Independent',pind,ind_cols),('Conditional',pcon,con_cols)]:
+              acc=float((model.predict(P[cols][te])==y[te]).mean())
+              print('PAIRWISE',name,'N',int(te.sum()),'ACC',acc)
 
-          # Fixed model class/settings for both variants; no validation tuning.
-          def fit_pair(X):
-              mps=HistGradientBoostingRegressor(max_depth=3,learning_rate=.05,l2_regularization=.1,
-                                                max_iter=250,random_state=20261022).fit(X[tr],S.dPS.to_numpy()[tr])
-              mer=HistGradientBoostingRegressor(max_depth=3,learning_rate=.05,l2_regularization=.1,
-                                                max_iter=250,random_state=20261022).fit(X[tr],S.dER.to_numpy()[tr])
-              return mps,mer
-          ind_ps,ind_er=fit_pair(X_ind)
-          con_ps,con_er=fit_pair(X_cond)
-
-          # Parameter-free beneficial-state classifier:
-          # beneficial iff adding h does not reduce PS and strictly improves ER.
-          ybenef=((S.dPS.to_numpy()>=0) & (S.dER.to_numpy()>0)).astype(int)
-          ind_b=HistGradientBoostingClassifier(max_depth=3,learning_rate=.05,l2_regularization=.1,
-                                               max_iter=250,random_state=20261022).fit(X_ind[tr],ybenef[tr])
-          con_b=HistGradientBoostingClassifier(max_depth=3,learning_rate=.05,l2_regularization=.1,
-                                               max_iter=250,random_state=20261022).fit(X_cond[tr],ybenef[tr])
-
-          def report_pred(name,X,mps,mer):
-              yps=S.dPS.to_numpy()[te]; yer=S.dER.to_numpy()[te]
-              pps=mps.predict(X[te]); per=mer.predict(X[te])
-              rps=spearmanr(yps,pps).statistic
-              rer=spearmanr(yer,per).statistic
-              active=np.abs(yer)>1e-12
-              ar=spearmanr(yer[active],per[active]).statistic if active.sum()>2 else np.nan
-              # safety sign accuracy is exact zero-threshold, not tuned.
-              sacc=np.mean((pps>=0)==(yps>=0))
-              print('PRED',name,'N',te.sum(),'PS_SPEARMAN',rps,'ER_SPEARMAN',rer,
-                    'ER_ACTIVE_SPEARMAN',ar,'PS_NONHARM_SIGN_ACC',sacc)
-          report_pred('Independent',X_ind,ind_ps,ind_er)
-          report_pred('Conditional',X_cond,con_ps,con_er)
-
-          ind_cols=X_ind.columns.tolist(); con_cols=X_cond.columns.tolist()
-          def feat(task,pool,confs,h,H,cols):
-              sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
-              d={'cand_conf':confs[h],'cand_deg':node_deg(h),'pool_size':len(pool),
-                 'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),
-                 'task_Process':float(task=='Process'),'selected_size':len(H),
-                 'sel_conf_mean':float(np.mean(sd)) if sd else 0.,
-                 'sel_conf_max':max(sd) if sd else 0.,
-                 'sel_conf_min':min(sd) if sd else 0.,
-                 'sel_conf_std':float(np.std(sd)) if sd else 0.,
-                 'sel_deg_mean':float(np.mean(dd)) if dd else 0.,
-                 'adj_count':sum(adj(h,x) for x in H),
-                 'conf_gap':confs[h]-(float(np.mean(sd)) if sd else 0.)}
-              return pd.DataFrame([[d.get(c,0.) for c in cols]],columns=cols)
-          def select_model(task,pool,confs,K,conditional):
+          def choose_pairwise(task,rid,split,cond,pool,confs,K,conditional):
               H=[]
-              mb,mer,cols=(con_b,con_er,con_cols) if conditional else (ind_b,ind_er,ind_cols)
-              static={}
-              if not conditional:
-                  for h in pool:
-                      xx=feat(task,pool,confs,h,[],cols)
-                      static[h]=(int(mb.predict(xx)[0]),float(mb.predict_proba(xx)[0,1]),float(mer.predict(xx)[0]))
+              model,cols=(pcon,con_cols) if conditional else (pind,ind_cols)
               for _ in range(K):
                   rem=[h for h in pool if h not in H]
-                  scored=[]
+                  if len(rem)==0: break
+                  if len(rem)==1: H.append(rem[0]); continue
+                  # rebuild current state features exactly as training
+                  sd=[confs[x] for x in H]; dd=[node_deg(x) for x in H]
+                  feats={}
                   for h in rem:
-                      if conditional:
-                          xx=feat(task,pool,confs,h,H,cols)
-                          label=int(mb.predict(xx)[0]); prob=float(mb.predict_proba(xx)[0,1]); der=float(mer.predict(xx)[0])
-                      else:
-                          label,prob,der=static[h]
-                      # No manually chosen threshold/weight: use model-predicted beneficial class.
-                      # Among predicted-beneficial candidates, maximize predicted evidence gain.
-                      if label==1:
-                          scored.append((der,prob,h))
-                  if not scored: break
-                  H.append(max(scored,key=lambda z:(z[0],z[1]))[2])
+                      feats[h]={
+                          'cand_conf':confs[h],'cand_deg':node_deg(h),'pool_size':len(pool),
+                          'selected_size':len(H),
+                          'sel_conf_mean':float(np.mean(sd)) if sd else 0.,
+                          'sel_conf_max':max(sd) if sd else 0.,
+                          'sel_conf_min':min(sd) if sd else 0.,
+                          'sel_conf_std':float(np.std(sd)) if sd else 0.,
+                          'sel_deg_mean':float(np.mean(dd)) if dd else 0.,
+                          'adj_count':sum(adj(h,x) for x in H),
+                          'conf_gap':confs[h]-(float(np.mean(sd)) if sd else 0.),
+                          'task_Gene':float(task=='Gene'),'task_Metabolite':float(task=='Metabolite'),
+                          'task_Process':float(task=='Process')
+                      }
+                  wins={h:0 for h in rem}; probsum={h:0. for h in rem}
+                  for i in range(len(rem)):
+                      for j in range(i+1,len(rem)):
+                          a,b=rem[i],rem[j]
+                          rec={}
+                          for k,v in feats[a].items(): rec['d_'+k]=v-feats[b][k]
+                          xx=pd.DataFrame([[rec.get(c,0.) for c in cols]],columns=cols)
+                          pa=float(model.predict_proba(xx)[0,1])
+                          if pa>=.5: wins[a]+=1
+                          else: wins[b]+=1
+                          probsum[a]+=pa; probsum[b]+=1-pa
+                  # Copeland winner; probability sum only resolves exact win-count ties.
+                  best=max(rem,key=lambda h:(wins[h],probsum[h]))
+                  H.append(best)
               return H
-          def select_oracle(row,pool,confs,K):
+
+          def choose_oracle_pareto(row,pool,confs,K):
               H=[]
               for _ in range(K):
+                  rem=[h for h in pool if h not in H]
+                  if not rem: break
                   base=eval_set(row,H,.30,confs)
-                  scored=[]
-                  for h in pool:
-                      if h in H: continue
-                      plus=eval_set(row,H+[h],.30,confs)
-                      dps=plus[0]-base[0]; der=plus[1]-base[1]
-                      if dps>=0 and der>0: scored.append((der,h))
-                  if not scored: break
-                  H.append(max(scored,key=lambda z:z[0])[1])
+                  outs={}
+                  for h in rem:
+                      p=eval_set(row,H+[h],.30,confs)
+                      outs[h]=(p[0]-base[0],p[1]-base[1])
+                  wins={h:0 for h in rem}
+                  for i in range(len(rem)):
+                      for j in range(i+1,len(rem)):
+                          a,b=rem[i],rem[j]; aps,aer=outs[a]; bps,ber=outs[b]
+                          if aps>=bps and aer>=ber and (aps>bps or aer>ber): wins[a]+=1
+                          elif bps>=aps and ber>=aer and (bps>aps or ber>aer): wins[b]+=1
+                  # deterministic tie-break on ER then PS, not weighted scalarization.
+                  best=max(rem,key=lambda h:(wins[h],outs[h][1],outs[h][0],h))
+                  H.append(best)
               return H
 
           res=[]
@@ -249,10 +245,9 @@ jobs:
               pool=d.node.astype(str).tolist()
               confs=dict(zip(pool,d.pred_semantic_conf.astype(float)))
               for K in [1,2]:
-                  if not pool: continue
-                  I=select_model(task,pool,confs,K,False)
-                  C=select_model(task,pool,confs,K,True)
-                  O=select_oracle(row,pool,confs,K)
+                  I=choose_pairwise(task,rid,split,cond,pool,confs,K,False)
+                  C=choose_pairwise(task,rid,split,cond,pool,confs,K,True)
+                  O=choose_oracle_pareto(row,pool,confs,K)
                   for name,sel in [('Independent',I),('Conditional',C),('Oracle',O)]:
                       ps,er,ah=eval_set(row,sel,.30,confs)
                       res.append({'task':task,'rid':rid,'condition':cond,'K':K,'method':name,
