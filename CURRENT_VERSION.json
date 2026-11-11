@@ -1,0 +1,40 @@
+{
+  "version": "v4-20261111",
+  "paper": {
+    "path": "paper_REVISED.pdf",
+    "sha256": "2ef3d9fb06577ee9e6c25a62a3ca93b8cc6c715a352e337f194aee7b7e4be5ed"
+  },
+  "code": {
+    "volumes": [
+      {
+        "path": "iclr2027_review_package_v4.zip",
+        "bytes": 12584955,
+        "sha256": "a470dbeb0fbf0bed5d1cd98ed755e3709fd1fb0d8c987db26e56fcb60e0037f0"
+      },
+      {
+        "path": "iclr2027_review_package_v4_part2.zip",
+        "bytes": 12585904,
+        "sha256": "fd6a2c1b384f6acb4cd69f95691f2bceca7d87b2c64fd68a88408269d0fe1af2"
+      },
+      {
+        "path": "iclr2027_review_package_v4_part3.zip",
+        "bytes": 12590257,
+        "sha256": "e7ff0e144ef542dac4c6844dce03e1a0c49008f238c05ddf058baf4362bd7fae"
+      },
+      {
+        "path": "iclr2027_review_package_v4_part4.zip",
+        "bytes": 8287045,
+        "sha256": "cd9e71d42ddd384bcf4f1cec8567ff8789802a211cf7e2f7098cc206542e0466"
+      }
+    ],
+    "extract_all_into_same_directory": true,
+    "manifest_files": 538
+  },
+  "original_v3_preserved": true,
+  "main_method_preserved": true,
+  "reviewer_questions": 11,
+  "main_pages": 10,
+  "total_pages": 18,
+  "greedy_independent_benefit_established": false,
+  "gate_independent_benefit_established": false
+}

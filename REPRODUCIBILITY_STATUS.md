@@ -1,3 +1,19 @@
+# Reproducibility status — current v4 revision
+
+Current artifacts: [v4 package](iclr2027_review_package_v4.zip), [revised paper](paper_REVISED.pdf), [version/checksums](CURRENT_VERSION.json). Download and extract all v4 ZIP volumes listed in README/CURRENT_VERSION into the same directory. The split only addresses the upload API size limit. This is a frozen evidence synchronization, not another experiment.
+
+The archive includes the unchanged original v3 ZIP for byte-preservation checks, original package sources/data, and the exact frozen supplementary inputs and scripts. `verify_release.py` checks every manifest entry and the main reported values without training. The selector/path/gate verification commands are listed in README.
+
+The complete selector is an explicit empty-start reconstruction of the original Gain, evaluated on239/248 oversized automatic pools. This closes operational execution, not historical-source identity. The main Clean pools still do not test filtering. TypeBonus's component interval is positive; whole-selector/Red independent benefits are not established.
+
+The controller attribution is corrected to actual Table1 Full (ER59.46%,mean gate.36035). Revised manuscript Table5 replaces the original gate Table4.124,992 previously frozen control outcomes have been replayed. Strong constants are competitive and paired uncertainty is retained. The old ER38.05%/mean gate.10917 summary is a labeled correction record, not silently relabeled current evidence.
+
+Figure3 and automatic retrieval both use14,029 normalized candidate records. The matching data and statistics are included. Complete-selector, matched path and gate controls have separate candidate/supervision scopes; small combined weighting/control gains are not isolated greedy/gate gains. Mechanism-record splits are not strict endpoint-pair isolation. Reused test diagnostics and failed development branches are labeled, not fresh confirmation.
+
+The main manuscript retains the original three-stage method and limits unsupported claims. EpiKG replay's original hash-seed limitation and other transfer limitations remain as documented in the historical package.
+
+## Historical v3 status
+
 # Reproducibility status
 
 
