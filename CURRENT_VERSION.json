@@ -1,8 +1,8 @@
 {
-  "version": "v4-20261111",
+  "version": "v5-20261117",
   "paper": {
     "path": "paper_REVISED.pdf",
-    "sha256": "2ef3d9fb06577ee9e6c25a62a3ca93b8cc6c715a352e337f194aee7b7e4be5ed"
+    "sha256": "03e05afaa915f09aef05bf2d66f23f99c079d098a41a652e2cd6982acf656302"
   },
   "code": {
     "volumes": [
@@ -36,5 +36,17 @@
   "main_pages": 10,
   "total_pages": 18,
   "greedy_independent_benefit_established": false,
-  "gate_independent_benefit_established": false
+  "gate_independent_benefit_established": false,
+  "source": {
+    "path": "iclr2027_conference.tex",
+    "sha256": "b849ba8e9e204a0b66a216bcb6c6ad780a88e735249fe1fc2ca458847df4986d"
+  },
+  "update": {
+    "path": "iclr2027_review_update_v5.zip",
+    "bytes": 1918338,
+    "sha256": "9ead7766879b7f4fb8caaecb5c89b137943ddfca16fe843cf0d3ef79c34f4464",
+    "manifest_files": 41,
+    "extract_after_all_four_v4_volumes": true
+  },
+  "base_v4_preserved": true
 }

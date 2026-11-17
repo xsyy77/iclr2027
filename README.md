@@ -1,37 +1,28 @@
 # Review artifacts
 
-The current revision is [v4 frozen code and evidence](iclr2027_review_package_v4.zip), aligned with the [revised paper](paper_REVISED.pdf) (10 main pages,18 total). Read the [scientific reviewer responses](REBUTTAL.md), [REPRODUCIBILITY_STATUS.md](REPRODUCIBILITY_STATUS.md) and [CURRENT_VERSION.json](CURRENT_VERSION.json). The original [v3 package](iclr2027_review_package_v3.zip) is preserved unchanged.
+The current paper is [paper_REVISED.pdf](paper_REVISED.pdf), with [LaTeX source](iclr2027_conference.tex) and the [complete source project](manuscript_source.zip) (10 main pages, 18 total). Read the [reviewer responses](REBUTTAL.md), [version and checksums](CURRENT_VERSION.json), and [reproducibility status](REPRODUCIBILITY_STATUS.md).
 
-## Download all v4 volumes
+## Code, data and verification
 
-- [iclr2027_review_package_v4.zip](iclr2027_review_package_v4.zip)
-- [iclr2027_review_package_v4_part2.zip](iclr2027_review_package_v4_part2.zip)
-- [iclr2027_review_package_v4_part3.zip](iclr2027_review_package_v4_part3.zip)
-- [iclr2027_review_package_v4_part4.zip](iclr2027_review_package_v4_part4.zip)
+Download all four base volumes: [v4 part 1](iclr2027_review_package_v4.zip), [part 2](iclr2027_review_package_v4_part2.zip), [part 3](iclr2027_review_package_v4_part3.zip), [part 4](iclr2027_review_package_v4_part4.zip). Extract them into the same directory. Then extract the [v5 code and evidence update](iclr2027_review_update_v5.zip) there, allowing the manuscript and rebuttal files to be replaced. All archives share `iclr2027_review_revision/` as their root. The original [v3 archive](iclr2027_review_package_v3.zip) and all v4 volumes are preserved unchanged.
 
-Extract every volume into the same directory before verification. The volumes contain disjoint files and preserve the original bytes.
-
-## Verify the current revision
+From the extracted root:
 
 ```
-python -c "import zipfile; from pathlib import Path; [zipfile.ZipFile(p).extractall('.') for p in sorted(Path('.').glob('iclr2027_review_package_v4*.zip'))]"
-cd iclr2027_review_revision
+python verify_v5.py
 pip install -r package/iclr2027_review_package/requirements.txt
-python verify_release.py
-python audit_output/verify_stage2_original_greedy.py
-python audit_output/verify_matched_path_scorer.py
-python audit_output/verify_reconciled_gate_statistics.py
+python audit_output/verify_clean_fixture_exact_20261117.py
+python audit_output/verify_full_automatic_20261117.py
 ```
 
-The package contains original data/code/checkpoints, the complete executable selector reconstruction, automatic-proposal evidence, main-configuration constant/shuffle gate controls, a matched compact path scorer, split/order audits, normalized Figure3 data, and the scientific eleven-question responses. Its manifest checks exact bytes. Private author notes and reviewer screenshots are excluded.
+The first command checks exact file hashes and recorded results without fitting or retrieval. The later checks reproduce existing inputs and frozen outcomes, not new optimization. README_V5.md documents scope. The v4 manifest verifies the historical base before applying v5; verify_v5.py verifies the current manuscript and replies after the update.
 
-## Read the results in their stated scope
+## Evidence and scope
 
-- Table1 uses supplied reference-aligned Clean candidates. Semantic+Fixed versus Utility+Fixed tests confidence weighting, not subset filtering.
-- Revised Table4 tests the complete empty-start original-formula reconstruction on oversized automatic pools. TypeBonus has positive pointwise ablation evidence; stable complete-rule and Red advantages remain unestablished.
-- Revised Table5/Figure4 use exactly Table1 Full candidates/confidences/predictions/budgets. Constants remain competitive; the paired gate-minus-mean utility interval includes zero. Historical `revised_table4.csv` file naming is documented inside the archive.
-- Automatic proposal is evaluated separately and Figure3 uses the same14,029 candidate records. Coverage availability is distinct from final fixed-budget superiority.
-- Matched path-control conclusions cover one compact numeric model and supplied candidate access. Split sensitivity is not a new blind holdout.
-- Unsuccessful development refinements are recorded separately and not substituted into the main method. No new fitting, TEST tuning or method change was performed for this release.
+- Clean uses reference-informed node identities, including the intermediate answer, but supplies no complete path or relation sequence. The deterministic constructor matches all 3,682 ordered saved lists. Output-equivalent reconstruction does not authenticate the historical writer; its rule was identified using saved inputs including TEST.
+- Automatic proposal uses endpoints, query intent and the fixed graph, excluding intermediate answers and query-specific reference membership. Candidate coverage availability increases from 100/248 to 152/248 before truncation. Fixed automatic Top3 PS/ER are 35.08/38.73% versus Graph Only 27.02/33.97%.
+- Table4 tests complete greedy selection on oversized automatic pools. Usefulness estimation and the TypeBonus ablation have positive evidence in their matched settings; independent whole-selector and Red superiority remain unestablished.
+- Table5 fixes the actual Table1 Full configuration for gate controls. Table6 reports the complete automatic combination: PS/ER/utility 33.47/41.84/0.35980. Its validation-selected constant reaches identical per-query PS/ER/utility. Full-minus-Proposal utility CI spans zero. This bounds gate/whole-pipeline claims without negating the separately supported component results.
+- No refitting, TEST retuning, replacement method or adoption of rejected Bridge51 branches occurs in this synchronization. Previously inspected TEST results are not fresh independent confirmation. Pointwise intervals are not multiplicity-adjusted proof of every component.
 
-The v4 README supersedes interpretation of the historical v3 README where the revision explicitly corrects configuration attribution or supplies a reconstructed operational selector. It does not claim authenticated recovery of missing historical code.
+Private author notes and reviewer screenshots are excluded. Historical v4 manuscript/rebuttal snapshots remain inside the unchanged base archives; the v5 overlay and root paper/replies are current.

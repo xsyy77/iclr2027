@@ -1,3 +1,13 @@
+# Reproducibility status — v5
+
+Current manuscript and scientific responses are the root PDF/LaTeX/REBUTTAL.md and their matching copies in the v5 update. Use all four v4 volumes as the unchanged base, then extract v5 over the shared directory. CURRENT_VERSION.json identifies exact hashes. The earlier status below describes the frozen v4 base and its historical snapshots.
+
+The v5 manifest includes the Clean constructor, all 3,682 ordered-list comparisons, the full automatic pipeline generator, per-query records, validation constant selection, paired intervals and independent implementation-verification scripts. Clean exact_verification.json and full-automatic verification.json are the completed checks; the full-automatic completion.json retains its earlier pending flag as an execution-stage record. Verification covers 4,090 paths and 32 intervals, without new model fitting. This is implementation verification on existing data, not independent validation.
+
+The Clean rule is reference-informed and output-equivalent, not an authenticated historical writer. Full automatic gate and VAL-selected g0.45 yield identical per-query PS/ER/utility. Stable superiority over the simpler Proposal Top3 configuration is not established; neither is inferiority or equivalence established by the interval crossing zero. Separate positive usefulness and type-complementarity results retain their scope.
+
+## Preserved v4 base status
+
 # Reproducibility status — current v4 revision
 
 Current artifacts: [v4 package](iclr2027_review_package_v4.zip), [revised paper](paper_REVISED.pdf), [version/checksums](CURRENT_VERSION.json). Download and extract all v4 ZIP volumes listed in README/CURRENT_VERSION into the same directory. The split only addresses the upload API size limit. This is a frozen evidence synchronization, not another experiment.
